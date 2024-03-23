@@ -1,0 +1,21 @@
+{
+  "name": "jedihe/dpl",
+  "description": "Drupalite (dpl) is a super-minimalistic tool for deploying and troubleshooting Drupal sites.",
+  "homepage": "https://github.com/jedihe/dpl",
+  "license": "GPL-3.0-or-later",
+  "minimum-stability": "dev",
+  "prefer-stable": true,
+  "authors": [
+    { "name": "John Herreño", "email": "jedihe@gmail.com" }
+  ],
+  "bin": [
+    "dpl"
+  ],
+  "require": {
+    "php": ">=8.1",
+    "drupal/core": "^10"
+  },
+  "conflict": {
+    "drupal/core": "< 10.0"
+  }
+}

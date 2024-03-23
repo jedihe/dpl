@@ -1,0 +1,61 @@
+#!/usr/bin/env php
+<?php
+
+use Drupal\Core\Database\Database;
+use Drupal\Core\DrupalKernel;
+use Drupal\Core\Session\AnonymousUserSession;
+use Symfony\Component\HttpFoundation\Request;
+
+// Locate and include composer's autoload.php; assume we're running from vendor/bin'
+$GLOBALS['_composer_autoload_path'] =
+  $autoload_path = __DIR__ . '/..'.'/autoload.php';
+$cwd = isset($_SERVER['PWD']) && is_dir($_SERVER['PWD']) ? $_SERVER['PWD'] : getcwd();
+if (!file_exists($autoload_path)) {
+  throw new \Exception("Could not locate autoload.php. cwd is $cwd; __DIR__ is " . __DIR__);
+}
+$loader = include $autoload_path;
+if (!$loader) {
+  throw new \Exception("Invalid autoloadfile: $autoload_path. cwd is $cwd; __DIR__ is " . __DIR__);
+}
+
+$root_path = __DIR__ . '/../../web';
+
+// Validate index.php is found at the expected location.
+$index_path = $root_path . '/index.php';
+if (!file_exists($index_path)) {
+  echo "ERR: can not find a Drupal install at $index_path\n";
+  exit(1);
+}
+
+// Validate settings.php is found at the expected location.
+$settings_path = $root_path . '/sites/default/settings.php';
+if (!file_exists($settings_path)) {
+  echo "ERR: can not find a settings.php file at $settings_path\n";
+  exit(1);
+}
+
+$request = Request::createFromGlobals();
+$request->overrideGlobals();
+$kernel = DrupalKernel::createFromRequest($request, $loader, 'prod', FALSE, $root_path);
+$kernel->boot();
+$kernel->getContainer()->get('current_user')->setAccount(new AnonymousUserSession());
+
+// Validate DB connection.
+if (!class_exists('\PDO')) {
+  echo "ERR: PDO support is required.\n";
+  exit(1);
+}
+try {
+  $connection = Database::getConnection();
+  $connection->open($connection->getConnectionOptions());
+} catch (\Exception $e) {
+  echo 'ERR: unable to connect to database with message: ' . $e->getMessage() . '. This may occur when Drupalite is trying to bootstrap a site that has not been installed or does not have a configured database.' . "\n";
+  exit(1);
+}
+if (!$connection->schema()->tableExists('key_value')) {
+  echo "ERR: key_value table not found. Database may be empty.\n";
+  exit(1);
+}
+
+echo \Drupal::VERSION;
+exit(0);
