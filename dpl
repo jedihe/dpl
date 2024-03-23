@@ -3,12 +3,15 @@
 
 use Drupal\Core\Database\Database;
 use Drupal\Core\DrupalKernel;
+use Drupal\Core\Site\Settings;
 use Drupal\Core\Session\AnonymousUserSession;
+use Drupal\Core\StreamWrapper\PrivateStream;
+use Drupal\Core\StreamWrapper\PublicStream;
 use Symfony\Component\HttpFoundation\Request;
 
 // Locate and include composer's autoload.php; assume we're running from vendor/bin'
 $GLOBALS['_composer_autoload_path'] =
-  $autoload_path = __DIR__ . '/..'.'/autoload.php';
+  $autoload_path = __DIR__ . '/../../autoload.php';
 $cwd = isset($_SERVER['PWD']) && is_dir($_SERVER['PWD']) ? $_SERVER['PWD'] : getcwd();
 if (!file_exists($autoload_path)) {
   throw new \Exception("Could not locate autoload.php. cwd is $cwd; __DIR__ is " . __DIR__);
@@ -18,7 +21,7 @@ if (!$loader) {
   throw new \Exception("Invalid autoloadfile: $autoload_path. cwd is $cwd; __DIR__ is " . __DIR__);
 }
 
-$root_path = __DIR__ . '/../../web';
+$root_path = __DIR__ . '/../../../web';
 
 // Validate index.php is found at the expected location.
 $index_path = $root_path . '/index.php';
@@ -37,8 +40,6 @@ if (!file_exists($settings_path)) {
 $request = Request::createFromGlobals();
 $request->overrideGlobals();
 $kernel = DrupalKernel::createFromRequest($request, $loader, 'prod', FALSE, $root_path);
-$kernel->boot();
-$kernel->getContainer()->get('current_user')->setAccount(new AnonymousUserSession());
 
 // Validate DB connection.
 if (!class_exists('\PDO')) {
@@ -57,5 +58,60 @@ if (!$connection->schema()->tableExists('key_value')) {
   exit(1);
 }
 
-echo \Drupal::VERSION;
+$kernel->boot();
+$kernel->preHandle($request);
+$kernel->getContainer()->get('current_user')->setAccount(new AnonymousUserSession());
+
+// Sample output from drush st.
+//Drupal version   : 10.2.3
+//Site URI         : http://local.site.com
+//DB driver        : mysql
+//DB hostname      : mysql
+//DB port          : 3306
+//DB username      : some-db-user
+//DB name          : some-db-name
+//Database         : Connected
+//Drupal bootstrap : Successful
+//Default theme    : some-theme
+//Admin theme      : some-admin-theme
+//PHP binary       : /usr/local/bin/php
+//PHP OS           : Linux
+//PHP version      : 8.2.16
+//Drush script     : /path/to/vendor/bin/drush
+//Drush version    : 12.4.3.0
+//Drush temp       : /tmp
+//Drush configs    : /path/to/vendor/drush/drush/drush.yml
+//Install profile  : standard
+//Drupal root      : /path/to/web
+//Site path        : sites/default
+//Files, Public    : sites/default/files
+//Files, Private   : sites/default/files/private
+//Files, Temp      : /tmp
+
+$db_connection_info = Database::getConnectionInfo()['default'] ?? [];
+
+$status_table = [
+  'Drupal version' => \Drupal::VERSION,
+  'Site URI' => 'http://default',
+  'DB driver' => $db_connection_info['driver'] ?? '',
+  'DB hostname' => $db_connection_info['host'] ?? '',
+  'DB port' => $db_connection_info['port'] ?? '',
+  'DB username' => $db_connection_info['username'] ?? '',
+  'DB name' => $db_connection_info['database'] ?? '',
+  'Database' => 'Connected', // Depends on the try/catch for DB check, above.
+  'Drupal bootstrap' => 'Successful', // Depends on successfully running DrupalKernel::boot(), ::preHandle().
+  'Default theme' => \Drupal::config('system.theme')->get('default'),
+  'Admin theme' => \Drupal::config('system.theme')->get('admin') ?: 'seven',
+  'PHP binary' => PHP_BINARY,
+  'PHP OS' => PHP_OS,
+  'PHP version' => PHP_VERSION,
+  'Install profile' => \Drupal::installProfile(),
+  'Drupal root' => realpath($root_path),
+  'Site path' => DrupalKernel::findSitePath($request, TRUE),
+  'Files, Public' => PublicStream::basePath(),
+  'Files, Private' => PrivateStream::basePath(),
+  'Files, Temp' => \Drupal::service('file_system')->getTempDirectory(),
+];
+
+echo json_encode($status_table, JSON_PRETTY_PRINT);
 exit(0);
