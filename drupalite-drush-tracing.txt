@@ -1,0 +1,87 @@
+
+/path/to/vendor/drush/drush/src/Config/Environment.php::__construct()
+ ▾ $this = (Drush\Config\Environment [7])
+   ⬦ $this->homeDir = (string [14]) `/home/some-user`
+   ⬦ $this->originalCwd = (string [13]) `/var/www/html`
+   ⬦ $this->etcPrefix = (string [0]) ``
+   ⬦ $this->sharePrefix = (string [0]) ``
+   ⬦ $this->drushBasePath = (string [36]) `/path/to/vendor/drush/drush`
+   ⬦ $this->vendorDir = (string [24]) `/path/to/vendor`
+   ⬦ $this->siteLoader = (null)
+
+
+// How to output to stderr:
+// From: src/vendor/drush/drush/src/Preflight/PreflightLog.php
+$this->output = $output ?: new StreamOutput(fopen('php://stderr', 'w'));
+// ...
+$this->output->write(' [preflight] ' . $message . "\n");
+
+// How to read the CLI script-name + args:
+// Calls into: src/vendor/drush/drush/src/Runtime/Runtime.php
+$status_code = $runtime->run($_SERVER['argv']);
+
+
+
+    /**
+     * Verify that we are running PHP through the command line interface.
+     *
+     *   A boolean value that is true when PHP is being run through the command line,
+     *   and false if being run through cgi or mod_php.
+     */
+    public function verifyCLI(): bool
+    {
+        return (php_sapi_name() == 'cli' || (is_numeric($_SERVER['argc']) && $_SERVER['argc'] > 0));
+    }
+
+
+// Symfony Terminal could be useful? (copying things from it, to not depend on the package)
+// - It seems to handle process signaling (SIGINT, etc)
+// File: src/vendor/symfony/console/Terminal.php
+
+
+// Bootstrap levels definition:
+// File: src/vendor/drush/drush/includes/bootstrap.inc
+
+// Bootstrap process delegates to version-semi-specific bootstrap classes.
+// @see src/vendor/drush/drush/src/Boot/BootstrapManager.php::bootstrap()
+
+// Bootstrap phases:
+ ▾ $phases = (array [6])
+   ⬦ $phases[0] = (string [12]) `NoLongerUsed`
+   ⬦ $phases[1] = (string [19]) `bootstrapDrupalRoot`
+   ⬦ $phases[2] = (string [19]) `bootstrapDrupalSite`
+   ⬦ $phases[3] = (string [28]) `bootstrapDrupalConfiguration`
+   ⬦ $phases[4] = (string [23]) `bootstrapDrupalDatabase`
+   ⬦ $phases[5] = (string [19]) `bootstrapDrupalFull`
+
+// Bootstrapping phases:
+// File: src/vendor/drush/drush/src/Boot/DrupalBoot8.php
+
+// Bootstrapping snippets?
+   $kernel_factory = ['Drupal\Core\DrupalKernel??', 'createFromRequest'];
+   $this->kernel = $kernel_factory($request, $this->autoloader, 'prod', $allow_dumping, $manager->getRoot());
+   // ...
+   $this->kernel->boot();
+   // Set a default account to make sure the correct timezone is set
+   $this->kernel->getContainer()->get('current_user')->setAccount(new AnonymousUserSession());
+
+// Simple abstraction to allow dry-runs in drush:
+// File: src/vendor/drush/drush/includes/drush.inc
+
+
+// Batch handling, custom layer derived from Drupal core, with support for multiple versions of Drupal
+// File: src/vendor/drush/drush/includes/batch.inc
+
+
+// Handlers for shutdown, etc
+// File: src/vendor/drush/drush/src/Runtime/ShutdownHandler.php
+
+
+
+// Exit code for the process:
+exit($status_code);
+
+// After exit(), a chain of ::terminate() methods is called, class:
+// src/web/core/lib/Drupal/Core/DrupalKernel.php
+// method: terminate()
+
