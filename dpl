@@ -3,7 +3,6 @@
 
 use Drupal\Core\Database\Database;
 use Drupal\Core\DrupalKernel;
-use Drupal\Core\Site\Settings;
 use Drupal\Core\Session\AnonymousUserSession;
 use Drupal\Core\StreamWrapper\PrivateStream;
 use Drupal\Core\StreamWrapper\PublicStream;
@@ -30,15 +29,17 @@ if (!file_exists($index_path)) {
   exit(1);
 }
 
+$request = Request::createFromGlobals();
+$request->overrideGlobals();
+
 // Validate settings.php is found at the expected location.
-$settings_path = $root_path . '/sites/default/settings.php';
+$site_path = DrupalKernel::findSitePath($request, TRUE);
+$settings_path = "$root_path/$site_path/settings.php";
 if (!file_exists($settings_path)) {
   echo "ERR: can not find a settings.php file at $settings_path\n";
   exit(1);
 }
 
-$request = Request::createFromGlobals();
-$request->overrideGlobals();
 $kernel = DrupalKernel::createFromRequest($request, $loader, 'prod', FALSE, $root_path);
 
 // Validate DB connection.
@@ -107,7 +108,7 @@ $status_table = [
   'PHP version' => PHP_VERSION,
   'Install profile' => \Drupal::installProfile(),
   'Drupal root' => realpath($root_path),
-  'Site path' => DrupalKernel::findSitePath($request, TRUE),
+  'Site path' => $site_path,
   'Files, Public' => PublicStream::basePath(),
   'Files, Private' => PrivateStream::basePath(),
   'Files, Temp' => \Drupal::service('file_system')->getTempDirectory(),
