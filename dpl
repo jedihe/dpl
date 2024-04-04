@@ -20,6 +20,16 @@ if (!$loader) {
   throw new \Exception("Invalid autoloadfile: $autoload_path. cwd is $cwd; __DIR__ is " . __DIR__);
 }
 
+// Determine dpl path, cmd.
+$argv0 = $_SERVER['argv'][0];
+$pwd_argv0 = $cwd . '/' . $argv0;
+//   If prepending pwd points to an executable dpl, use it; else assume $argv0 is already an absolute path.
+$dpl_path = is_file($pwd_argv0) && is_executable($pwd_argv0) && str_ends_with($pwd_argv0, '/vendor/bin/dpl') ?
+  $pwd_argv0 :
+  $argv0;
+
+$dpl_cmd = $_SERVER['argv'][1] ?? 'st';
+
 $root_path = __DIR__ . '/../../../web';
 
 // Validate index.php is found at the expected location.
@@ -63,56 +73,62 @@ $kernel->boot();
 $kernel->preHandle($request);
 $kernel->getContainer()->get('current_user')->setAccount(new AnonymousUserSession());
 
-// Sample output from drush st.
-//Drupal version   : 10.2.3
-//Site URI         : http://local.site.com
-//DB driver        : mysql
-//DB hostname      : mysql
-//DB port          : 3306
-//DB username      : some-db-user
-//DB name          : some-db-name
-//Database         : Connected
-//Drupal bootstrap : Successful
-//Default theme    : some-theme
-//Admin theme      : some-admin-theme
-//PHP binary       : /usr/local/bin/php
-//PHP OS           : Linux
-//PHP version      : 8.2.16
-//Drush script     : /path/to/vendor/bin/drush
-//Drush version    : 12.4.3.0
-//Drush temp       : /tmp
-//Drush configs    : /path/to/vendor/drush/drush/drush.yml
-//Install profile  : standard
-//Drupal root      : /path/to/web
-//Site path        : sites/default
-//Files, Public    : sites/default/files
-//Files, Private   : sites/default/files/private
-//Files, Temp      : /tmp
+$cmd = $_SERVER['argv'];
 
 $db_connection_info = Database::getConnectionInfo()['default'] ?? [];
 
-$status_table = [
-  'Drupal version' => \Drupal::VERSION,
-  'Site URI' => 'http://default',
-  'DB driver' => $db_connection_info['driver'] ?? '',
-  'DB hostname' => $db_connection_info['host'] ?? '',
-  'DB port' => $db_connection_info['port'] ?? '',
-  'DB username' => $db_connection_info['username'] ?? '',
-  'DB name' => $db_connection_info['database'] ?? '',
-  'Database' => 'Connected', // Depends on the try/catch for DB check, above.
-  'Drupal bootstrap' => 'Successful', // Depends on successfully running DrupalKernel::boot(), ::preHandle().
-  'Default theme' => \Drupal::config('system.theme')->get('default'),
-  'Admin theme' => \Drupal::config('system.theme')->get('admin') ?: 'seven',
-  'PHP binary' => PHP_BINARY,
-  'PHP OS' => PHP_OS,
-  'PHP version' => PHP_VERSION,
-  'Install profile' => \Drupal::installProfile(),
-  'Drupal root' => realpath($root_path),
-  'Site path' => $site_path,
-  'Files, Public' => PublicStream::basePath(),
-  'Files, Private' => PrivateStream::basePath(),
-  'Files, Temp' => \Drupal::service('file_system')->getTempDirectory(),
-];
+if ($dpl_cmd === 'st') {
+  // Sample output from drush st.
+  //Drupal version   : 10.2.3
+  //Site URI         : http://local.site.com
+  //DB driver        : mysql
+  //DB hostname      : mysql
+  //DB port          : 3306
+  //DB username      : some-db-user
+  //DB name          : some-db-name
+  //Database         : Connected
+  //Drupal bootstrap : Successful
+  //Default theme    : some-theme
+  //Admin theme      : some-admin-theme
+  //PHP binary       : /usr/local/bin/php
+  //PHP OS           : Linux
+  //PHP version      : 8.2.16
+  //Drush script     : /path/to/vendor/bin/drush
+  //Drush version    : 12.4.3.0
+  //Drush temp       : /tmp
+  //Drush configs    : /path/to/vendor/drush/drush/drush.yml
+  //Install profile  : standard
+  //Drupal root      : /path/to/web
+  //Site path        : sites/default
+  //Files, Public    : sites/default/files
+  //Files, Private   : sites/default/files/private
+  //Files, Temp      : /tmp
 
-echo json_encode($status_table, JSON_PRETTY_PRINT);
+  $status_table = [
+    'Drupal version' => \Drupal::VERSION,
+    'Site URI' => 'http://default',
+    'DB driver' => $db_connection_info['driver'] ?? '',
+    'DB hostname' => $db_connection_info['host'] ?? '',
+    'DB port' => $db_connection_info['port'] ?? '',
+    'DB username' => $db_connection_info['username'] ?? '',
+    'DB name' => $db_connection_info['database'] ?? '',
+    'Database' => 'Connected', // Depends on the try/catch for DB check, above.
+    'Drupal bootstrap' => 'Successful', // Depends on successfully running DrupalKernel::boot(), ::preHandle().
+    'Default theme' => \Drupal::config('system.theme')->get('default'),
+    'Admin theme' => \Drupal::config('system.theme')->get('admin') ?: 'seven',
+    'PHP binary' => PHP_BINARY,
+    'PHP OS' => PHP_OS,
+    'PHP version' => PHP_VERSION,
+    'Dpl script' => $dpl_path,
+    'Install profile' => \Drupal::installProfile(),
+    'Drupal root' => realpath($root_path),
+    'Site path' => $site_path,
+    'Files, Public' => PublicStream::basePath(),
+    'Files, Private' => PrivateStream::basePath(),
+    'Files, Temp' => \Drupal::service('file_system')->getTempDirectory(),
+  ];
+
+  echo json_encode($status_table, JSON_PRETTY_PRINT);
+}
+
 exit(0);
