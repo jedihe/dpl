@@ -130,5 +130,11 @@ if ($dpl_cmd === 'st') {
 
   echo json_encode($status_table, JSON_PRETTY_PRINT);
 }
+elseif ($dpl_cmd == 'updb') {
+  require_once $root_path . '/core/includes/install.inc';
+  \drupal_load_updates();
+  require_once $root_path . '/core/includes/update.inc';
+  echo var_export(\update_get_update_list());
+}
 
 exit(0);
