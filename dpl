@@ -6,7 +6,12 @@ use Drupal\Core\DrupalKernel;
 use Drupal\Core\Session\AnonymousUserSession;
 use Drupal\Core\StreamWrapper\PrivateStream;
 use Drupal\Core\StreamWrapper\PublicStream;
+use Symfony\Component\Console\Output\StreamOutput;
 use Symfony\Component\HttpFoundation\Request;
+
+// echo var_export(__DIR__);
+// echo var_export($_SERVER);
+// exit(1);
 
 // Locate and include composer's autoload.php; assume we're running from vendor/bin'
 $GLOBALS['_composer_autoload_path'] =
@@ -19,6 +24,15 @@ $loader = include $autoload_path;
 if (!$loader) {
   throw new \Exception("Invalid autoloadfile: $autoload_path. cwd is $cwd; __DIR__ is " . __DIR__);
 }
+
+// Set up logger.
+class DplLogger {
+  protected $output;
+  public function __construct() { $this->output = new StreamOutput(fopen('php://stderr', 'w')); }
+  public function notice($msg, $newline = TRUE) { $this->output->write(' [notice] ' . $msg, $newline); }
+  public function error($msg, $newline = TRUE) { $this->output->write(' [error] ' . $msg, $newline); }
+}
+$dpl_logger = new DplLogger();
 
 // Determine dpl path, cmd.
 $argv0 = $_SERVER['argv'][0];
@@ -134,7 +148,17 @@ elseif ($dpl_cmd == 'updb') {
   require_once $root_path . '/core/includes/install.inc';
   \drupal_load_updates();
   require_once $root_path . '/core/includes/update.inc';
-  echo var_export(\update_get_update_list());
+  $pending_updates = \update_get_update_list();
+
+  /** @var \Drupal\Core\Update\UpdateRegistry $post_update_registry */
+  $pending_post_updates = \Drupal::service('update.post_update_registry')->getPendingUpdateInformation();
+
+  if (empty($pending_updates) && empty($pending_post_updates)) {
+    $dpl_logger->notice('No pending updates.');
+  }
+  else {
+    echo json_encode(['updates' => $pending_updates, 'post-updates' => $pending_post_updates], JSON_PRETTY_PRINT);
+  }
 }
 
 exit(0);
