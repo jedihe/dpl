@@ -27,7 +27,8 @@
 
 use Drupal\Core\Database\Database;
 use Drupal\Core\Database\IntegrityConstraintViolationException;
-use Drush\Drush;
+//use Drush\Drush;
+use Symfony\Component\Process\Process;
 
 /**
  * Process a Drupal batch by spawning multiple Drush processes.
@@ -146,15 +147,34 @@ function _drush_backend_batch_process($command = 'batch-process', $args = [], $o
     $batch_storage->create($batch);
     $finished = FALSE;
 
+    // print_r("Before while loop");
     while (!$finished) {
-      $process = Drush::drush(Drush::aliasManager()->getSelf(), $command, $args);
+      //$process = Drush::drush(Drush::aliasManager()->getSelf(), $command, $args);
+      global $dpl_path;
+      $process = new Process([$dpl_path, $command, $batch['id']], DRUPAL_ROOT);
       // We already re-spawn when memory is low so no need for timeout.
       $process->setTimeout(null);
+      $process->enableOutput();
       // Suppress printing stdout since a JSON array is returned to us here.
-      $process->run($process->showRealtime()->hideStdout());
-      $result = $process->getOutputAsJson();
+      // $process->run($process->showRealtime()->hideStdout());
+
+      global $dpl_logger;
+      $raw_output = '';
+      $process->run(function ($type, $data) use ($dpl_logger, &$raw_output) {
+        if (Process::OUT === $type) {
+          //echo $data;
+          $raw_output .= $data;
+        } else { // $process::ERR === $type
+          $dpl_logger->log($data, FALSE);
+        }
+      });
+      //$process->wait();
+      //print_r("Raw output: " . $raw_output . "\n");
+      $result = json_decode($raw_output, TRUE);
+      // print_r("Result: ". var_export($result, TRUE) . "\n");
       $finished = !$process->isSuccessful() || (isset($result['drush_batch_process_finished']) && $result['drush_batch_process_finished'] === TRUE);
     }
+    //print_r("After while loop");
   }
 
   // An attempt to clear the batch is performed in "_drush_batch_finished",
@@ -179,6 +199,7 @@ function _drush_backend_batch_process($command = 'batch-process', $args = [], $o
  *   A results array.
  */
 function _drush_batch_command($id) {
+  //echo print_r("At: " . __FUNCTION__);
   $batch = &batch_get();
 
   $data = Database::getConnection()->select('batch', 'b')
@@ -218,6 +239,9 @@ function _drush_batch_command($id) {
  * reached.
  */
 function _drush_batch_worker() {
+  global $dpl_logger;
+
+  //echo print_r("At: " . __FUNCTION__);
   $batch = &batch_get();
   $current_set = &_batch_current_set();
   $set_changed = TRUE;
@@ -252,13 +276,15 @@ function _drush_batch_worker() {
 
       // Tolerate recoverable errors.
       // See https://github.com/drush-ops/drush/issues/1930
-      $halt_on_error = \Drush\Drush::config()->get('runtime.php.halt-on-error', TRUE);
-      \Drush\Drush::config()->set('runtime.php.halt-on-error', FALSE);
+      //$halt_on_error = \Drush\Drush::config()->get('runtime.php.halt-on-error', TRUE);
+      //\Drush\Drush::config()->set('runtime.php.halt-on-error', FALSE);
+      //print_r("About to run: " . $callback) . "\n";
       call_user_func_array($callback, array_merge($args, [&$batch_context]));
       if (!empty($task_message)) {
-        Drush::logger()->notice(strip_tags($task_message));
+        //Drush::logger()->notice(strip_tags($task_message));
+        $dpl_logger->notice(strip_tags($task_message));
       }
-      \Drush\Drush::config()->set('runtime.php.halt-on-error', $halt_on_error);
+      //\Drush\Drush::config()->set('runtime.php.halt-on-error', $halt_on_error);
 
       if ($finished >= 1) {
         // Make sure this step is not counted twice when computing $current.
@@ -290,8 +316,10 @@ function _drush_batch_worker() {
 
     // If we are in progressive mode, break processing after 60% of memory usage
     // is reached.
-    if (drush_memory_limit() > 0 && (memory_get_usage() * 1.6) >= drush_memory_limit()) {
-      Drush::logger()->notice(dt("Batch process has consumed in excess of 60% of available memory. Starting new thread"));
+    //if (drush_memory_limit() > 0 && (memory_get_usage() * 1.6) >= drush_memory_limit()) {
+    if (dpl_memory_limit() > 0 && (memory_get_usage() * 1.6) >= dpl_memory_limit()) {
+      //Drush::logger()->notice(dt("Batch process has consumed in excess of 60% of available memory. Starting new thread"));
+      $dpl_logger->notice("Batch process has consumed in excess of 60% of available memory. Starting new thread");
       // Record elapsed wall clock time.
       $current_set['elapsed'] = round((microtime(TRUE) - $current_set['start']) * 1000, 2);
       break;

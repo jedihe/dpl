@@ -4,6 +4,7 @@
 use Drupal\Core\Database\Database;
 use Drupal\Core\DrupalKernel;
 use Drupal\Core\Session\AnonymousUserSession;
+use Drupal\Core\Site\Settings;
 use Drupal\Core\StreamWrapper\PrivateStream;
 use Drupal\Core\StreamWrapper\PublicStream;
 use Symfony\Component\Console\Output\StreamOutput;
@@ -29,22 +30,29 @@ if (!$loader) {
 class DplLogger {
   protected $output;
   public function __construct() { $this->output = new StreamOutput(fopen('php://stderr', 'w')); }
-  public function notice($msg, $newline = TRUE) { $this->output->write(' [notice] ' . $msg, $newline); }
-  public function error($msg, $newline = TRUE) { $this->output->write(' [error] ' . $msg, $newline); }
+  public function log($msg, $newline = TRUE) { $this->output->write($msg, $newline); }
+  public function notice($msg, $newline = TRUE) { $this->log(' [notice] ' . $msg, $newline); }
+  public function warning($msg, $newline = TRUE) { $this->log(' [warning] ' . $msg, $newline); }
+  public function error($msg, $newline = TRUE) { $this->log(' [error] ' . $msg, $newline); }
 }
+global $dpl_logger;
 $dpl_logger = new DplLogger();
+
+//$dpl_logger->notice(var_export($_SERVER['argv'], TRUE));
 
 // Determine dpl path, cmd.
 $argv0 = $_SERVER['argv'][0];
 $pwd_argv0 = $cwd . '/' . $argv0;
 //   If prepending pwd points to an executable dpl, use it; else assume $argv0 is already an absolute path.
+global $dpl_path;
 $dpl_path = is_file($pwd_argv0) && is_executable($pwd_argv0) && str_ends_with($pwd_argv0, '/vendor/bin/dpl') ?
   $pwd_argv0 :
   $argv0;
 
 $dpl_cmd = $_SERVER['argv'][1] ?? 'st';
 
-$root_path = __DIR__ . '/../../../web';
+$root_path = realpath(__DIR__ . '/../../../web');
+chdir($root_path);
 
 // Validate index.php is found at the expected location.
 $index_path = $root_path . '/index.php';
@@ -55,6 +63,24 @@ if (!file_exists($index_path)) {
 
 $request = Request::createFromGlobals();
 $request->overrideGlobals();
+
+if ($dpl_cmd == 'cr' ) {
+  // We no longer clear APC and similar caches as they are useless on CLI.
+  // See https://github.com/drush-ops/drush/pull/2450
+  //$root  = $this->bootstrapManager->getRoot();
+  require_once $root_path . '/core/includes/utility.inc';
+
+  //$request = $this->bootstrapManager->bootstrap()->getRequest();
+  DrupalKernel::bootEnvironment();
+
+  $site_path = DrupalKernel::findSitePath($request);
+  Settings::initialize($root_path, $site_path, $loader);
+
+  // drupal_rebuild() calls drupal_flush_all_caches() itself, so we don't do it manually.
+  drupal_rebuild($loader, $request);
+  $dpl_logger->notice('Cache rebuild complete.');
+  exit(0);
+}
 
 // Validate settings.php is found at the expected location.
 $site_path = DrupalKernel::findSitePath($request, TRUE);
@@ -150,6 +176,14 @@ elseif ($dpl_cmd == 'updb') {
   require_once $root_path . '/core/includes/update.inc';
   $pending_updates = \update_get_update_list();
 
+  // Array structure: module_name => update_warnings.
+  $updates_warnings = [];
+  $start_updates = [];
+  foreach ($pending_updates as $module => $updates) {
+    if ($warning = $updates['warning'] ?? NULL) $updates_warnings[$module] = $warning;
+    if ($start = $updates['start'] ?? NULL) $start_updates[$module] = $start;
+  }
+
   /** @var \Drupal\Core\Update\UpdateRegistry $post_update_registry */
   $pending_post_updates = \Drupal::service('update.post_update_registry')->getPendingUpdateInformation();
 
@@ -157,8 +191,189 @@ elseif ($dpl_cmd == 'updb') {
     $dpl_logger->notice('No pending updates.');
   }
   else {
+    foreach ($updates_warnings as $module => $warning) {
+      $dpl_logger->warning("$module: $warning"); // TODO: port drush's dt(), use placeholders for these messages.
+    }
     echo json_encode(['updates' => $pending_updates, 'post-updates' => $pending_post_updates], JSON_PRETTY_PRINT);
+
+    $runnable_sorted_updates = \update_resolve_dependencies($start_updates);
+
+    $operations = [];
+    foreach ($runnable_sorted_updates as $update) {
+      if (empty($update['allowed'])) break;
+
+      if (isset($start_updates[$update['module']])) {
+        // TODO: setInstalledVersion in update.update_hook_registry introduced in Drupal 9.3.0
+        if (!function_exists('drupal_set_installed_schema_version')) {
+          \Drupal::service("update.update_hook_registry")->setInstalledVersion($update['module'], $update['number'] - 1);
+        } else {
+          drupal_set_installed_schema_version($update['module'], $update['number'] - 1);
+        }
+        unset($start_updates[$update['module']]);
+      }
+      $update_deps = array_keys($update['reverse_paths'] ?? []);
+      $operations[] = ['dpl_updb_do_one', [$update['module'], $update['number'], $update_deps]];
+    }
+
+    $post_updates = \Drupal::service('update.post_update_registry')->getPendingUpdateFunctions();
+    if ($post_updates && $operations) {
+      // Only needed if we performed updates earlier.
+      $operations[] = ['dpl_updb_cache_rebuild', []];
+    }
+    foreach ($post_updates as $function) {
+      $operations[] = ['dpl_updb_do_one_post_update', [$function]];
+    }
+
+    $original_maint_mode = \Drupal::service('state')->get('system.maintenance_mode');
+    if (!$original_maint_mode) {
+      \Drupal::service('state')->set('system.maintenance_mode', true);
+      $operations[] = ['dpl_restore_maint_mode', [false]];
+    }
+
+    $batch = [
+      'operations' => $operations,
+      'title' => 'Updating',
+      'init_message' => 'Starting updates',
+      'error_message' => 'An unrecoverable error has occurred. You can find the error message below. It is advised to copy it to the clipboard for reference.',
+      'file' => 'core/includes/update.inc',
+    ];
+
+    //print_r($batch);
+
+    batch_set($batch);
+    require_once __DIR__ . '/batch.inc';
+    $result = drush_backend_batch_process('updb-batch');
+
+    $success = false;
+    if (!is_array($result)) {
+      $type = gettype($result);
+      $dpl_logger->error("Batch process did not return a result array. Returned: $type");
+    }
+    elseif (!empty($result[0]['#abort'])) {
+      // Whenever an error occurs the batch process does not continue, so
+      // this array should only contain a single item, but we still output
+      // all available data for completeness.
+      $abort_msg = implode(', ', $result[0]['#abort']);
+      $dpl_logger->error("Update aborted by: $abort_msg");
+    } else {
+      $success = true;
+    }
   }
 }
+elseif ($dpl_cmd == 'updb-batch') {
+  //echo print_r("At: " . __FUNCTION__);
+  require_once $root_path . '/core/includes/batch.inc';
+  require_once __DIR__ . '/batch.inc';
+  $batch_id = $_SERVER['argv'][2];
+  //print_r($batch_id);
+  //echo json_encode(['drush_batch_process_finished' => TRUE]);
+  echo json_encode(_drush_batch_command($batch_id));
+}
 
+function dpl_updb_do_one(string $module, int $number, array $dependency_map, array $context) {
+  global $dpl_logger;
+  $function = $module . '_update_' . $number;
+  // echo print_r("About to run:" . $function);
+
+  // Disable config entity overrides.
+  if (!defined('MAINTENANCE_MODE')) {
+      define('MAINTENANCE_MODE', 'update');
+  }
+
+  // If this update was aborted in a previous step, or has a dependency that
+  // was aborted in a previous step, go no further.
+  if (!empty($context['results']['#abort']) && array_intersect($context['results']['#abort'], array_merge($dependency_map, [$function]))) {
+      return;
+  }
+
+  $context['log'] = false;
+
+  \Drupal::moduleHandler()->loadInclude($module, 'install');
+
+  $ret = [];
+  if (function_exists($function)) {
+      try {
+          if ($context['log']) {
+              Database::startLog($function);
+          }
+
+          if (empty($context['results'][$module][$number]['type'])) {
+              $dpl_logger->notice("Update started: $function");
+          }
+
+          $ret['results']['query'] = $function($context['sandbox']);
+          $ret['results']['success'] = true;
+          $ret['type'] = 'update';
+      } catch (\Throwable $e) {
+          // PHP 7 introduces Throwable, which covers both Error and Exception throwables.
+          $ret['#abort'] = ['success' => false, 'query' => $e->getMessage()];
+          $dpl_logger->error($e->getMessage());
+      }
+
+      if ($context['log']) {
+          $ret['queries'] = Database::getLog($function);
+      }
+  } else {
+      $ret['#abort'] = ['success' => false];
+      $dpl_logger->warning("Update function $function not found in file $module.install");
+  }
+
+  if (isset($context['sandbox']['#finished'])) {
+      $context['finished'] = $context['sandbox']['#finished'];
+      unset($context['sandbox']['#finished']);
+  }
+
+  if (!isset($context['results'][$module])) {
+      $context['results'][$module] = [];
+  }
+  if (!isset($context['results'][$module][$number])) {
+      $context['results'][$module][$number] = [];
+  }
+  $context['results'][$module][$number] = array_merge($context['results'][$module][$number], $ret);
+
+  // Log the message that was returned.
+  if (!empty($ret['results']['query'])) {
+      $dpl_logger->notice(strip_tags((string) $ret['results']['query']));
+  }
+
+  if (!empty($ret['#abort'])) {
+      // Record this function in the list of updates that were aborted.
+      $context['results']['#abort'][] = $function;
+      $dpl_logger->error("Update failed: $function");
+  }
+
+  // Record the schema update if it was completed successfully.
+  if ($context['finished'] >= 1 && empty($ret['#abort'])) {
+      \Drupal::service("update.update_hook_registry")->setInstalledVersion($module, $number);
+      $context['message'] = "Update completed: $function";
+  }
+}
+function dpl_updb_cache_rebuild() {
+  drupal_flush_all_caches();
+  \Drupal::service('kernel')->rebuildContainer();
+  // Load the module data which has been removed when the container was
+  // rebuilt.
+  $module_handler = \Drupal::moduleHandler();
+  $module_handler->loadAll();
+  $module_handler->invokeAll('rebuild');
+}
+
+/**
+ * Get the PHP memory_limit value in bytes.
+ */
+function dpl_memory_limit() {
+  $value = trim(ini_get('memory_limit'));
+  $last = strtolower($value[strlen($value)-1]);
+  $size = (int) rtrim($value, 'GgMmKk');
+  switch ($last) {
+    case 'g':
+      $size *= 1024;
+    case 'm':
+      $size *= 1024;
+    case 'k':
+      $size *= 1024;
+  }
+
+  return $size;
+}
 exit(0);
