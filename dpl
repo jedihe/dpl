@@ -7,6 +7,7 @@ use Drupal\Core\Session\AnonymousUserSession;
 use Drupal\Core\Site\Settings;
 use Drupal\Core\StreamWrapper\PrivateStream;
 use Drupal\Core\StreamWrapper\PublicStream;
+use Drupal\Core\Utility\Error;
 use Symfony\Component\Console\Output\StreamOutput;
 use Symfony\Component\HttpFoundation\Request;
 
@@ -227,7 +228,7 @@ elseif ($dpl_cmd == 'updb') {
     $original_maint_mode = \Drupal::service('state')->get('system.maintenance_mode');
     if (!$original_maint_mode) {
       \Drupal::service('state')->set('system.maintenance_mode', true);
-      $operations[] = ['dpl_restore_maint_mode', [false]];
+      $operations[] = ['dpl_updb_restore_maint_mode', [false]];
     }
 
     $batch = [
@@ -356,6 +357,92 @@ function dpl_updb_cache_rebuild() {
   $module_handler = \Drupal::moduleHandler();
   $module_handler->loadAll();
   $module_handler->invokeAll('rebuild');
+}
+function dpl_updb_do_one_post_update(string $function, array $context) {
+  global $dpl_logger;
+
+  $ret = [];
+
+  // Disable config entity overrides.
+  if (!defined('MAINTENANCE_MODE')) {
+    define('MAINTENANCE_MODE', 'update');
+  }
+
+  // If this update was aborted in a previous step, or has a dependency that was
+  // aborted in a previous step, go no further.
+  if (!empty($context['results']['#abort'])) {
+    return;
+  }
+
+  list($extension, $name) = explode('_post_update_', $function, 2);
+  $update_registry = \Drupal::service('update.post_update_registry');
+  // https://www.drupal.org/project/drupal/issues/3259188 Support theme's
+  // having post update functions when it is supported in Drupal core.
+  if (method_exists($update_registry, 'getUpdateFunctions')) {
+    \Drupal::service('update.post_update_registry')->getUpdateFunctions($extension);
+  } else {
+    \Drupal::service('update.post_update_registry')->getModuleUpdateFunctions($extension);
+  }
+
+  if (function_exists($function)) {
+    if (empty($context['results'][$extension][$name]['type'])) {
+      $dpl_logger->notice("Update started: $function");
+    }
+    try {
+      $ret['results']['query'] = $function($context['sandbox']);
+      $ret['results']['success'] = true;
+      $ret['type'] = 'post_update';
+
+      if (!isset($context['sandbox']['#finished']) || (isset($context['sandbox']['#finished']) && $context['sandbox']['#finished'] >= 1)) {
+        \Drupal::service('update.post_update_registry')->registerInvokedUpdates([$function]);
+      }
+    } catch (\Exception $e) {
+      // @TODO We may want to do different error handling for different exception
+      // types, but for now we'll just log the exception and return the message
+      // for printing.
+      // @see https://www.drupal.org/node/2564311
+      $dpl_logger->error($e->getMessage());
+
+      $variables = Error::decodeException($e);
+      unset($variables['backtrace']);
+      $ret['#abort'] = [
+        'success' => false,
+        'query' => t('%type: @message in %function (line %line of %file).', $variables),
+      ];
+    }
+  } else {
+    $ret['#abort'] = ['success' => false];
+    $dpl_logger->warning(t('Post update function @function not found in file @filename', [
+      '@function' => $function,
+      '@filename' => "$filename.php",
+    ]));
+  }
+
+  if (isset($context['sandbox']['#finished'])) {
+    $context['finished'] = $context['sandbox']['#finished'];
+    unset($context['sandbox']['#finished']);
+  }
+  if (!isset($context['results'][$extension][$name])) {
+    $context['results'][$extension][$name] = [];
+  }
+  $context['results'][$extension][$name] = array_merge($context['results'][$extension][$name], $ret);
+
+  // Log the message that was returned.
+  if (!empty($ret['results']['query'])) {
+    $dpl_logger->notice(strip_tags((string) $ret['results']['query']));
+  }
+
+  if (!empty($ret['#abort'])) {
+    // Record this function in the list of updates that were aborted.
+    $context['results']['#abort'][] = $function;
+    $dpl_logger->error("Update failed: $function");
+  } elseif ($context['finished'] == 1 && empty($ret['#abort'])) {
+    $context['message'] = "Update completed: $function";
+  }
+}
+
+function dpl_updb_restore_maint_mode($status) {
+  \Drupal::service('state')->set('system.maintenance_mode', $status);
 }
 
 /**
