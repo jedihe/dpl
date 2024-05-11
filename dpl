@@ -57,7 +57,7 @@ chdir($root_path);
 // Validate index.php is found at the expected location.
 $index_path = $root_path . '/index.php';
 if (!file_exists($index_path)) {
-  echo "ERR: can not find a Drupal install at $index_path\n";
+  $dpl_logger->error("Can not find a Drupal install at $index_path");
   exit(1);
 }
 
@@ -86,7 +86,7 @@ if ($dpl_cmd == 'cr' ) {
 $site_path = DrupalKernel::findSitePath($request, TRUE);
 $settings_path = "$root_path/$site_path/settings.php";
 if (!file_exists($settings_path)) {
-  echo "ERR: can not find a settings.php file at $settings_path\n";
+  $dpl_logger->error("Can not find a settings.php file at $settings_path");
   exit(1);
 }
 
@@ -94,24 +94,40 @@ $kernel = DrupalKernel::createFromRequest($request, $loader, 'prod', FALSE, $roo
 
 // Validate DB connection.
 if (!class_exists('\PDO')) {
-  echo "ERR: PDO support is required.\n";
+  $dpl_logger->error('PDO support is required.');
   exit(1);
 }
 try {
   $connection = Database::getConnection();
   $connection->open($connection->getConnectionOptions());
+
+  if (!$connection->schema()->tableExists('key_value')) {
+    $dpl_logger->error("key_value table not found. Database may be empty.");
+    exit(1);
+  }
+  // throw new \Exception("Fake error: while trying DB connection + key_value table check.");
 } catch (\Exception $e) {
-  echo 'ERR: unable to connect to database with message: ' . $e->getMessage() . '. This may occur when Drupalite is trying to bootstrap a site that has not been installed or does not have a configured database.' . "\n";
-  exit(1);
-}
-if (!$connection->schema()->tableExists('key_value')) {
-  echo "ERR: key_value table not found. Database may be empty.\n";
-  exit(1);
+  if ($dpl_cmd !== 'st') {
+    // Hard fail for comands other than st.
+    $dpl_logger->error('Unable to connect to database with message: ' . $e->getMessage() . '. This may occur when Drupalite is trying to bootstrap a site that has not been installed or does not have a configured database.');
+    exit(1);
+  }
 }
 
-$kernel->boot();
-$kernel->preHandle($request);
-$kernel->getContainer()->get('current_user')->setAccount(new AnonymousUserSession());
+$st_bootstrap = FALSE;
+try {
+  $kernel->boot();
+  $kernel->preHandle($request);
+  $kernel->getContainer()->get('current_user')->setAccount(new AnonymousUserSession());
+  $st_bootstrap = TRUE;
+  // throw new \Exception("Fake error: while trying full bootstrap.");
+}
+catch (Exception $e) {
+  if ($dpl_cmd !== 'st') {
+    $dpl_logger->error("Failed to perform a full bootstrap. Try running dpl st to troubleshoot.\nException message:\n\n" . $e->getMessage());
+    exit(1);
+  }
+}
 
 $cmd = $_SERVER['argv'];
 
@@ -147,13 +163,17 @@ if ($dpl_cmd === 'st') {
   $status_table = [
     'Drupal version' => \Drupal::VERSION,
     'Site URI' => 'http://default',
+  ] + array_filter([
     'DB driver' => $db_connection_info['driver'] ?? '',
     'DB hostname' => $db_connection_info['host'] ?? '',
     'DB port' => $db_connection_info['port'] ?? '',
     'DB username' => $db_connection_info['username'] ?? '',
     'DB name' => $db_connection_info['database'] ?? '',
+  ]) + [
     'Database' => 'Connected', // Depends on the try/catch for DB check, above.
-    'Drupal bootstrap' => 'Successful', // Depends on successfully running DrupalKernel::boot(), ::preHandle().
+  ] + array_filter([
+    'Drupal bootstrap' => $st_bootstrap ? 'Successful' : FALSE, // Depends on successfully running DrupalKernel::boot(), ::preHandle().
+  ]) + [
     'Default theme' => \Drupal::config('system.theme')->get('default'),
     'Admin theme' => \Drupal::config('system.theme')->get('admin') ?: 'seven',
     'PHP binary' => PHP_BINARY,
